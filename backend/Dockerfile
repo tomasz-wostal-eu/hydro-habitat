@@ -1,7 +1,7 @@
 # --- Stage 1: Test Stage ---
 # This stage contains the full Go toolchain and source code,
 # used for running both unit and integration tests.
-FROM golang:1.23-alpine AS test-stage
+FROM golang:1.24-alpine AS test-stage
 
 WORKDIR /app
 
