@@ -6,10 +6,6 @@ on:
       - "main"     # Run on main branch for releases
       - "dev"      # Run on dev branch for prereleases
       - "develop"  # Run on develop branch for prereleases
-permissions:
-  contents: read
-  packages: write
-  issues: write
 
 jobs:
   build-test-and-release:
@@ -37,9 +33,9 @@ jobs:
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
-        username: ${{ github.actor }}
+        username: ${{ github.repository_owner }}
         password: ${{ secrets.GITHUB_TOKEN }}
-
+        
     - name: Run unit tests
       run: docker compose run --rm backend-unit-test
 
@@ -182,16 +178,41 @@ jobs:
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
         echo "version_tag=${VERSION_TAG}" >> $GITHUB_OUTPUT
 
+    # Set proper repository name variables to avoid any permission issues
+    - name: Set repository variables
+      id: repo_vars
+      run: |
+        # Lowercase the repository name as GHCR requires lowercase
+        REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+        echo "repository_lc=${REPO_LC}" >> $GITHUB_OUTPUT
+        echo "Using lowercase repository name: ${REPO_LC}"
+        # Check package visibility settings - packages should be public
+        echo "Repository owner: ${{ github.repository_owner }}"
+
     - name: Build and push backend image
       uses: docker/build-push-action@v5
       with:
         context: ./backend
         push: true
         tags: |
-          ghcr.io/${{ github.repository }}/backend:${{ steps.final_version.outputs.version_tag }}
-          ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/backend:latest', github.repository) || format('ghcr.io/{0}/backend:dev', github.repository) }}
+          ghcr.io/${{ steps.repo_vars.outputs.repository_lc }}/backend:${{ steps.final_version.outputs.version_tag }}
+          ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/backend:latest', steps.repo_vars.outputs.repository_lc) || format('ghcr.io/{0}/backend:dev', steps.repo_vars.outputs.repository_lc) }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    - name: Debug backend image info
+      if: always()
+      run: |
+        echo "Repository: ${{ steps.repo_vars.outputs.repository_lc }}"
+        echo "Tags:"
+        echo "- ghcr.io/${{ steps.repo_vars.outputs.repository_lc }}/backend:${{ steps.final_version.outputs.version_tag }}"
+        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          echo "- ghcr.io/${{ steps.repo_vars.outputs.repository_lc }}/backend:latest"
+        else
+          echo "- ghcr.io/${{ steps.repo_vars.outputs.repository_lc }}/backend:dev"
+        fi
+        # Check if the images were built
+        docker images | grep backend || true
 
     - name: Build and push frontend image
       uses: docker/build-push-action@v5
@@ -199,10 +220,24 @@ jobs:
         context: ./frontend
         push: true
         tags: |
-          ghcr.io/${{ github.repository }}/frontend:${{ steps.final_version.outputs.version_tag }}
-          ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/frontend:latest', github.repository) || format('ghcr.io/{0}/frontend:dev', github.repository) }}
+          ghcr.io/${{ steps.repo_vars.outputs.repository_lc }}/frontend:${{ steps.final_version.outputs.version_tag }}
+          ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/frontend:latest', steps.repo_vars.outputs.repository_lc) || format('ghcr.io/{0}/frontend:dev', steps.repo_vars.outputs.repository_lc) }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        
+    - name: Debug frontend image info
+      if: always()
+      run: |
+        echo "Repository: ${{ steps.repo_vars.outputs.repository_lc }}"
+        echo "Tags:"
+        echo "- ghcr.io/${{ steps.repo_vars.outputs.repository_lc }}/frontend:${{ steps.final_version.outputs.version_tag }}"
+        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          echo "- ghcr.io/${{ steps.repo_vars.outputs.repository_lc }}/frontend:latest"
+        else
+          echo "- ghcr.io/${{ steps.repo_vars.outputs.repository_lc }}/frontend:dev"
+        fi
+        # Check if the images were built
+        docker images | grep frontend || true
 
     - name: Create GitHub Release
       id: create_release
@@ -216,19 +251,28 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Comment on related issues
+      if: steps.create_release.outcome == 'success' && steps.changelog.outputs.changelog != ''
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        CHANGELOG: ${{ steps.changelog.outputs.changelog }}
-        RELEASE_URL: ${{ steps.create_release.outputs.html_url }}
+        CHANGELOG: ${{ steps.changelog.outputs.changelog || '' }}
         RELEASE_VERSION: ${{ steps.final_version.outputs.version_tag }}
       run: |
         # Find unique issue numbers (e.g., #123) in the changelog
+        if [ -z "$CHANGELOG" ]; then
+          echo "No changelog content found."
+          exit 0
+        fi
+
+        # Extract issue numbers and comment on them
         issues=$(echo "$CHANGELOG" | grep -oE '#[0-9]+' | sed 's/#//' | sort -u | tr '\n' ' ')
         if [ -z "$issues" ]; then
           echo "No related issues found in the changelog."
           exit 0
         fi
+        
         echo "Found issues: $issues"
+        RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ steps.final_version.outputs.version_tag }}"
+        
         for issue in $issues; do
           echo "Commenting on issue #$issue"
           gh issue comment "$issue" --body "✅ This has been addressed in release [${RELEASE_VERSION}](${RELEASE_URL})"
