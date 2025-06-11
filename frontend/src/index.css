@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-base text-text antialiased;
+}
+
+.form-input {
+  @apply w-full bg-surface0 border border-surface2 rounded-lg px-3 py-2 text-text placeholder-overlay0 focus:outline-none focus:ring-2 focus:ring-mauve;
+}
+
+.form-select {
+  @apply w-full bg-surface0 border border-surface2 rounded-lg px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-mauve;
+}
+
+.btn {
+  @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200 shadow-md;
+}
+
+.btn-primary {
+  @apply bg-blue text-crust hover:bg-sapphire;
+}
+
+.btn-secondary {
+  @apply bg-surface1 text-text hover:bg-surface2;
+}
+
+.btn-danger {
+  @apply bg-red text-crust hover:bg-maroon;
+}
