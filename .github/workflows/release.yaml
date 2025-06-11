@@ -6,6 +6,10 @@ on:
       - "main"     # Run on main branch for releases
       - "dev"      # Run on dev branch for prereleases
       - "develop"  # Run on develop branch for prereleases
+permissions:
+  contents: read
+  packages: write
+  issues: write
 
 jobs:
   build-test-and-release:
