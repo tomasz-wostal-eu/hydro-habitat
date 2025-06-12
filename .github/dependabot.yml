@@ -1,41 +1,101 @@
 version: 2
 updates:
+  # Go modules in backend
   - package-ecosystem: "gomod"
     directory: "/backend"
     schedule:
       interval: "weekly"
-    target-branch: "develop"
-    open-pull-requests-limit: 10
-    groups:
-      go-dependencies:
-        patterns: ["*"]
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "@twostal"
+    labels:
+      - "dependencies"
+      - "security"
+      - "backend"
     commit-message:
-      prefix: "chore"
-      
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # NPM packages in frontend
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
       interval: "weekly"
-    target-branch: "develop"
-    open-pull-requests-limit: 10
-    groups:
-      npm-dependencies:
-        patterns: ["*"]
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "@twostal"
+    labels:
+      - "dependencies"
+      - "security"
+      - "frontend"
     commit-message:
-      prefix: "chore"
-      
+      prefix: "chore(deps)"
+      include: "scope"
+    ignore:
+      # Ignore major version updates for stable dependencies
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
+
+  # Docker base images
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/backend"
     schedule:
       interval: "weekly"
-    target-branch: "develop"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    reviewers:
+      - "@twostal"
+    labels:
+      - "dependencies"
+      - "security"
+      - "docker"
     commit-message:
-      prefix: "chore"
-      
+      prefix: "chore(deps)"
+      include: "scope"
+
+  - package-ecosystem: "docker"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    reviewers:
+      - "@twostal"
+    labels:
+      - "dependencies"
+      - "security"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-    target-branch: "develop"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "@twostal"
+    labels:
+      - "dependencies"
+      - "security"
+      - "github-actions"
     commit-message:
-      prefix: "chore"
+      prefix: "chore(deps)"
+      include: "scope"
