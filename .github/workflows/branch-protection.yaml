@@ -77,6 +77,6 @@ jobs:
         curl -f http://localhost:8080/health || exit 1
         
         # Check frontend availability
-        curl -f http://localhost:3000 || exit 1
+        curl -f http://localhost || exit 1
         
         docker compose down
