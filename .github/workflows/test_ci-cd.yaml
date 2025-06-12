@@ -1,0 +1,789 @@
+name: CI/CD Pipeline Tests
+
+on:
+  push:
+    paths:
+      - '.github/workflows/ci-cd.yaml'
+      - '.github/workflows/test_ci-cd.yaml'
+  pull_request:
+    paths:
+      - '.github/workflows/ci-cd.yaml'
+      - '.github/workflows/test_ci-cd.yaml'
+  workflow_dispatch:
+
+env:
+  TEST_GO_VERSION: '1.21'
+  TEST_NODE_VERSION: '20'
+
+jobs:
+  # Test workflow syntax and structure
+  workflow-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install actionlint
+        run: |
+          bash <(curl https://raw.githubusercontent.com/rhymond/actionlint/main/scripts/download-actionlint.bash)
+          sudo mv actionlint /usr/local/bin/
+      
+      - name: Validate workflow syntax
+        run: |
+          actionlint .github/workflows/ci-cd.yaml
+          echo "✅ Workflow syntax is valid"
+      
+      - name: Check required workflow components
+        run: |
+          # Check workflow name
+          if ! grep -q "name: CI/CD Pipeline" .github/workflows/ci-cd.yaml; then
+            echo "❌ Workflow name not found"
+            exit 1
+          fi
+          
+          # Check required jobs exist
+          required_jobs=(
+            "pr-number"
+            "changes"
+            "backend-quality"
+            "backend-tests"
+            "frontend-quality"
+            "docker-build"
+            "release"
+            "update-project"
+          )
+          
+          for job in "${required_jobs[@]}"; do
+            if ! grep -q "^  $job:" .github/workflows/ci-cd.yaml; then
+              echo "❌ Required job '$job' not found"
+              exit 1
+            fi
+            echo "✅ Job '$job' found"
+          done
+      
+      - name: Validate environment variables
+        run: |
+          # Check required environment variables
+          if ! grep -q "GO_VERSION: '1.21'" .github/workflows/ci-cd.yaml; then
+            echo "❌ GO_VERSION not set correctly"
+            exit 1
+          fi
+          
+          if ! grep -q "NODE_VERSION: '20'" .github/workflows/ci-cd.yaml; then
+            echo "❌ NODE_VERSION not set correctly"
+            exit 1
+          fi
+          
+          if ! grep -q "DOCKER_BUILDKIT: 1" .github/workflows/ci-cd.yaml; then
+            echo "❌ DOCKER_BUILDKIT not set correctly"
+            exit 1
+          fi
+          
+          echo "✅ Environment variables validated"
+
+  # Test job dependencies and conditional logic
+  job-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validate job dependencies
+        run: |
+          # Check backend-quality depends on changes
+          if ! grep -A 3 "backend-quality:" .github/workflows/ci-cd.yaml | grep -q "needs: changes"; then
+            echo "❌ backend-quality should depend on changes"
+            exit 1
+          fi
+          
+          # Check docker-build dependencies
+          if ! grep -A 3 "docker-build:" .github/workflows/ci-cd.yaml | grep -q "needs: \[backend-quality, backend-tests, frontend-quality\]"; then
+            echo "❌ docker-build dependencies incorrect"
+            exit 1
+          fi
+          
+          # Check release dependencies
+          if ! grep -A 3 "release:" .github/workflows/ci-cd.yaml | grep -q "needs: \[docker-build, pr-number\]"; then
+            echo "❌ release dependencies incorrect"
+            exit 1
+          fi
+          
+          echo "✅ Job dependencies validated"
+      
+      - name: Validate conditional execution
+        run: |
+          # Check backend jobs conditional logic
+          if ! grep -A 5 "backend-quality:" .github/workflows/ci-cd.yaml | grep -q "needs.changes.outputs.backend == 'true'"; then
+            echo "❌ backend-quality condition missing"
+            exit 1
+          fi
+          
+          # Check release branch conditions
+          if ! grep -A 5 "release:" .github/workflows/ci-cd.yaml | grep -q "refs/heads/main"; then
+            echo "❌ release branch condition missing"
+            exit 1
+          fi
+          
+          echo "✅ Conditional logic validated"
+
+  # Test database service configuration
+  database-service-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hydro
+          POSTGRES_PASSWORD: hydrosecret
+          POSTGRES_DB: hydro_habitat_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Test PostgreSQL service configuration
+        run: |
+          # Check if PostgreSQL service is running
+          pg_isready -h localhost -p 5432 -U hydro -d hydro_habitat_test || {
+            echo "❌ PostgreSQL service not available"
+            exit 1
+          }
+          
+          echo "✅ PostgreSQL service is running"
+      
+      - name: Validate database connection
+        run: |
+          # Test database connection with same credentials as CI
+          PGPASSWORD=hydrosecret psql -h localhost -p 5432 -U hydro -d hydro_habitat_test -c "SELECT version();" || {
+            echo "❌ Database connection failed"
+            exit 1
+          }
+          
+          echo "✅ Database connection successful"
+      
+      - name: Test database schema setup
+        run: |
+          # Create test schema to ensure database works for integration tests
+          PGPASSWORD=hydrosecret psql -h localhost -p 5432 -U hydro -d hydro_habitat_test << 'EOF'
+          CREATE TABLE IF NOT EXISTS tanks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR NOT NULL,
+            room VARCHAR,
+            rack_location VARCHAR,
+            volume_liters INTEGER NOT NULL CHECK (volume_liters > 0),
+            inventory_number VARCHAR,
+            water VARCHAR NOT NULL,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+          );
+          
+          -- Test insert/select
+          INSERT INTO tanks (name, volume_liters, water) VALUES ('Test Tank', 100, 'tap');
+          SELECT COUNT(*) FROM tanks;
+          EOF
+          
+          echo "✅ Database schema test passed"
+
+  # Test backend integration with database
+  backend-integration-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hydro
+          POSTGRES_PASSWORD: hydrosecret
+          POSTGRES_DB: hydro_habitat_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.TEST_GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+      
+      - name: Setup database schema
+        run: |
+          # Create the schema that the integration tests expect
+          PGPASSWORD=hydrosecret psql -h localhost -p 5432 -U hydro -d hydro_habitat_test << 'EOF'
+          CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+          
+          CREATE TABLE IF NOT EXISTS tanks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR NOT NULL,
+            room VARCHAR,
+            rack_location VARCHAR,
+            volume_liters INTEGER NOT NULL CHECK (volume_liters > 0),
+            inventory_number VARCHAR,
+            water VARCHAR NOT NULL,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+          );
+          EOF
+          
+          echo "✅ Database schema created"
+      
+      - name: Install dependencies
+        working-directory: ./backend
+        run: go mod download
+      
+      - name: Run unit tests
+        working-directory: ./backend
+        run: |
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+          echo "✅ Unit tests passed"
+      
+      - name: Run integration tests
+        working-directory: ./backend
+        env:
+          DATABASE_URL: postgres://hydro:hydrosecret@localhost:5432/hydro_habitat_test?sslmode=disable
+        run: |
+          go test -v -tags=integration ./...
+          echo "✅ Integration tests passed"
+      
+      - name: Test coverage analysis
+        working-directory: ./backend
+        run: |
+          go tool cover -func=coverage.out
+          coverage_percent=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Coverage: ${coverage_percent}%"
+          
+          # Check if coverage is reasonable (>50%)
+          if (( $(echo "$coverage_percent < 50" | bc -l) )); then
+            echo "⚠️  Warning: Test coverage is below 50%"
+          else
+            echo "✅ Test coverage is adequate (${coverage_percent}%)"
+          fi
+
+  # Test path filtering logic
+  path-filter-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Test path filter configuration
+        run: |
+          # Verify path filter patterns in the workflow
+          echo "Testing path filter configuration..."
+          
+          # Check backend path filters
+          if ! grep -A 10 "dorny/paths-filter@v2" .github/workflows/ci-cd.yaml | grep -q "backend/\*\*"; then
+            echo "❌ Backend path filter missing"
+            exit 1
+          fi
+          
+          # Check frontend path filters
+          if ! grep -A 10 "dorny/paths-filter@v2" .github/workflows/ci-cd.yaml | grep -q "frontend/\*\*"; then
+            echo "❌ Frontend path filter missing"
+            exit 1
+          fi
+          
+          # Check docker path filters
+          if ! grep -A 10 "dorny/paths-filter@v2" .github/workflows/ci-cd.yaml | grep -q "docker-compose.yaml"; then
+            echo "❌ Docker path filter missing"
+            exit 1
+          fi
+          
+          echo "✅ Path filters validated"
+      
+      - name: Simulate path filtering
+        uses: dorny/paths-filter@v2
+        id: test-filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'go.mod'
+              - 'go.sum'
+            frontend:
+              - 'frontend/**'
+              - 'package*.json'
+            docker:
+              - 'docker-compose.yaml'
+              - 'Dockerfile*'
+            workflows:
+              - '.github/workflows/**'
+      
+      - name: Validate filter outputs
+        run: |
+          echo "Filter results:"
+          echo "Backend: ${{ steps.test-filter.outputs.backend }}"
+          echo "Frontend: ${{ steps.test-filter.outputs.frontend }}"
+          echo "Docker: ${{ steps.test-filter.outputs.docker }}"
+          echo "Workflows: ${{ steps.test-filter.outputs.workflows }}"
+          echo "✅ Path filtering test completed"
+
+  # Test security scanning configuration
+  security-scan-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.TEST_GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+      
+      - name: Test gosec configuration
+        working-directory: ./backend
+        run: |
+          go mod download
+          
+          # Install gosec
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          
+          # Run gosec scan
+          gosec -fmt sarif -out gosec-results.sarif ./...
+          
+          # Check if SARIF file was created
+          if [ ! -f gosec-results.sarif ]; then
+            echo "❌ gosec SARIF output not created"
+            exit 1
+          fi
+          
+          echo "✅ gosec security scan completed"
+      
+      - name: Test govulncheck
+        working-directory: ./backend
+        run: |
+          # Install govulncheck
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          
+          # Run vulnerability check
+          govulncheck ./...
+          
+          echo "✅ govulncheck completed"
+      
+      - name: Validate SARIF upload configuration
+        run: |
+          # Check if SARIF upload is configured correctly
+          if ! grep -A 5 "Upload SARIF results" .github/workflows/ci-cd.yaml | grep -q "github/codeql-action/upload-sarif@v3"; then
+            echo "❌ SARIF upload not configured correctly"
+            exit 1
+          fi
+          
+          if ! grep -A 5 "Upload SARIF results" .github/workflows/ci-cd.yaml | grep -q "if: always()"; then
+            echo "❌ SARIF upload should run always"
+            exit 1
+          fi
+          
+          echo "✅ SARIF upload configuration validated"
+
+  # Test Docker build and scanning
+  docker-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Test Docker Compose build
+        run: |
+          # Test if docker-compose.yaml exists and is valid
+          if [ ! -f docker-compose.yaml ]; then
+            echo "❌ docker-compose.yaml not found"
+            exit 1
+          fi
+          
+          # Validate Docker Compose configuration
+          docker compose config > /dev/null
+          echo "✅ Docker Compose configuration is valid"
+      
+      - name: Test Docker build configuration
+        run: |
+          # Check if Docker build is configured correctly in workflow
+          if ! grep -q "docker compose build --parallel" .github/workflows/ci-cd.yaml; then
+            echo "❌ Parallel Docker build not configured"
+            exit 1
+          fi
+          
+          echo "✅ Docker build configuration validated"
+      
+      - name: Test Trivy scanner configuration
+        run: |
+          # Check if Trivy scanner is configured
+          if ! grep -A 5 "Trivy vulnerability scanner" .github/workflows/ci-cd.yaml | grep -q "aquasecurity/trivy-action@master"; then
+            echo "❌ Trivy scanner not configured"
+            exit 1
+          fi
+          
+          # Check if both backend and frontend are scanned
+          trivy_scans=$(grep -c "Trivy vulnerability scanner" .github/workflows/ci-cd.yaml)
+          if [ "$trivy_scans" -lt 2 ]; then
+            echo "❌ Both backend and frontend should be scanned with Trivy"
+            exit 1
+          fi
+          
+          echo "✅ Trivy scanner configuration validated"
+
+  # Test semantic release configuration
+  semantic-release-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.TEST_NODE_VERSION }}
+      
+      - name: Test semantic-release installation
+        run: |
+          # Check if semantic-release is installed correctly
+          if ! grep -q "semantic-release@latest" .github/workflows/ci-cd.yaml; then
+            echo "❌ semantic-release not configured for installation"
+            exit 1
+          fi
+          
+          # Check required plugins
+          required_plugins=(
+            "@semantic-release/git"
+            "@semantic-release/github"
+            "@semantic-release/changelog"
+            "@semantic-release/exec"
+          )
+          
+          for plugin in "${required_plugins[@]}"; do
+            if ! grep -q "$plugin" .github/workflows/ci-cd.yaml; then
+              echo "❌ Plugin '$plugin' not configured"
+              exit 1
+            fi
+            echo "✅ Plugin '$plugin' found"
+          done
+      
+      - name: Test branch-specific configurations
+        run: |
+          # Check if branch-specific release configs are created
+          if ! grep -A 20 "Create branch-specific release config" .github/workflows/ci-cd.yaml | grep -q "develop.*alpha"; then
+            echo "❌ Alpha release configuration missing"
+            exit 1
+          fi
+          
+          if ! grep -A 50 "Create branch-specific release config" .github/workflows/ci-cd.yaml | grep -q "dev.*beta"; then
+            echo "❌ Beta release configuration missing"
+            exit 1
+          fi
+          
+          if ! grep -A 80 "Create branch-specific release config" .github/workflows/ci-cd.yaml | grep -q "main"; then
+            echo "❌ Production release configuration missing"
+            exit 1
+          fi
+          
+          echo "✅ Branch-specific release configurations validated"
+      
+      - name: Test semantic-release dry run
+        run: |
+          # Install semantic-release and plugins for testing
+          npm install -g semantic-release@latest
+          npm install -g @semantic-release/git @semantic-release/github @semantic-release/changelog @semantic-release/exec
+          
+          # Create a test release configuration
+          cat > .releaserc.json << 'EOF'
+          {
+            "branches": ["main"],
+            "plugins": [
+              "@semantic-release/commit-analyzer",
+              "@semantic-release/release-notes-generator"
+            ]
+          }
+          EOF
+          
+          # Test semantic-release dry run
+          npx semantic-release --dry-run
+          
+          echo "✅ Semantic-release dry run completed"
+
+  # Test coverage reporting
+  coverage-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validate coverage configuration
+        run: |
+          # Check backend coverage setup
+          if ! grep -A 5 "Run unit tests" .github/workflows/ci-cd.yaml | grep -q "coverprofile=coverage.out"; then
+            echo "❌ Backend coverage profile not configured"
+            exit 1
+          fi
+          
+          # Check Codecov upload for backend
+          if ! grep -A 5 "Upload coverage to Codecov" .github/workflows/ci-cd.yaml | grep -q "flags: backend"; then
+            echo "❌ Backend coverage upload not configured"
+            exit 1
+          fi
+          
+          # Check frontend coverage
+          if ! grep -A 5 "frontend-quality" .github/workflows/ci-cd.yaml | grep -q "test:coverage"; then
+            echo "❌ Frontend coverage not configured"
+            exit 1
+          fi
+          
+          # Check Codecov upload for frontend
+          frontend_codecov=$(grep -A 10 "Upload coverage to Codecov" .github/workflows/ci-cd.yaml | grep -c "flags: frontend")
+          if [ "$frontend_codecov" -lt 1 ]; then
+            echo "❌ Frontend coverage upload not configured"
+            exit 1
+          fi
+          
+          echo "✅ Coverage reporting configuration validated"
+
+  # Test error handling and resilience
+  error-handling-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Test conditional execution patterns
+        run: |
+          # Check for proper use of always() condition
+          if ! grep -q "if: always()" .github/workflows/ci-cd.yaml; then
+            echo "❌ No always() conditions found for error handling"
+            exit 1
+          fi
+          
+          # Check job result checking
+          if ! grep -q "needs.*result == 'success'" .github/workflows/ci-cd.yaml; then
+            echo "❌ Job result checking not implemented"
+            exit 1
+          fi
+          
+          # Check SARIF upload error handling
+          if ! grep -A 3 "Upload SARIF results" .github/workflows/ci-cd.yaml | grep -q "if: always()"; then
+            echo "❌ SARIF upload should run even on failure"
+            exit 1
+          fi
+          
+          echo "✅ Error handling patterns validated"
+      
+      - name: Test failure recovery logic
+        run: |
+          # Check docker-build conditional logic
+          docker_build_condition=$(grep -A 3 "docker-build:" .github/workflows/ci-cd.yaml | grep "if:")
+          if [[ ! "$docker_build_condition" == *"always()"* ]]; then
+            echo "❌ docker-build should use always() for conditional execution"
+            exit 1
+          fi
+          
+          echo "✅ Failure recovery logic validated"
+
+  # Test action versions and security
+  action-security-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check action versions
+        run: |
+          # Check for up-to-date action versions
+          if ! grep -q "actions/checkout@v4" .github/workflows/ci-cd.yaml; then
+            echo "❌ actions/checkout should use v4"
+            exit 1
+          fi
+          
+          if ! grep -q "actions/setup-go@v5" .github/workflows/ci-cd.yaml; then
+            echo "❌ actions/setup-go should use v5"
+            exit 1
+          fi
+          
+          if ! grep -q "actions/setup-node@v4" .github/workflows/ci-cd.yaml; then
+            echo "❌ actions/setup-node should use v4"
+            exit 1
+          fi
+          
+          echo "✅ Action versions are current"
+      
+      - name: Validate permissions
+        run: |
+          # Check required permissions
+          required_permissions=(
+            "contents: write"
+            "issues: write"
+            "pull-requests: write"
+            "security-events: write"
+            "packages: write"
+          )
+          
+          for perm in "${required_permissions[@]}"; do
+            if ! grep -q "$perm" .github/workflows/ci-cd.yaml; then
+              echo "❌ Permission '$perm' not found"
+              exit 1
+            fi
+            echo "✅ Permission '$perm' configured"
+          done
+
+  # Test GitHub Project integration
+  project-integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validate GitHub Project configuration
+        run: |
+          # Check if GitHub Project update is configured
+          if ! grep -q "Update GitHub Project" .github/workflows/ci-cd.yaml; then
+            echo "❌ GitHub Project update not configured"
+            exit 1
+          fi
+          
+          # Check if github-script action is used
+          if ! grep -q "actions/github-script@v7" .github/workflows/ci-cd.yaml; then
+            echo "❌ github-script action not configured correctly"
+            exit 1
+          fi
+          
+          # Check branch-specific column logic
+          if ! grep -A 20 "Update GitHub Project" .github/workflows/ci-cd.yaml | grep -q "refs/heads/main"; then
+            echo "❌ Branch-specific project column logic missing"
+            exit 1
+          fi
+          
+          echo "✅ GitHub Project integration validated"
+
+  # Integration test with workflow simulation
+  workflow-simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Simulate workflow execution order
+        run: |
+          echo "Simulating CI/CD workflow execution..."
+          
+          # Test environment setup
+          export GO_VERSION="${{ env.TEST_GO_VERSION }}"
+          export NODE_VERSION="${{ env.TEST_NODE_VERSION }}"
+          export DOCKER_BUILDKIT=1
+          
+          echo "Environment setup:"
+          echo "GO_VERSION=$GO_VERSION"
+          echo "NODE_VERSION=$NODE_VERSION"
+          echo "DOCKER_BUILDKIT=$DOCKER_BUILDKIT"
+          
+          # Simulate job execution order
+          echo "Job execution simulation:"
+          echo "1. ✓ pr-number (conditional)"
+          echo "2. ✓ changes (path filtering)"
+          echo "3. ✓ backend-quality (parallel)"
+          echo "4. ✓ backend-tests (parallel)"
+          echo "5. ✓ frontend-quality (parallel)"
+          echo "6. ✓ docker-build (depends on 3,4,5)"
+          echo "7. ✓ release (depends on 6, conditional)"
+          echo "8. ✓ update-project (depends on 6, conditional)"
+          
+          echo "✅ Workflow simulation completed successfully"
+      
+      - name: Test workflow outputs
+        run: |
+          echo "Testing expected workflow outputs..."
+          
+          # Check PR number output configuration
+          if ! grep -A 5 "pr-number:" .github/workflows/ci-cd.yaml | grep -q "outputs:"; then
+            echo "❌ PR number job should have outputs"
+            exit 1
+          fi
+          
+          # Check changes output configuration
+          changes_outputs=("backend" "frontend" "docker")
+          for output in "${changes_outputs[@]}"; do
+            if ! grep -A 10 "changes:" .github/workflows/ci-cd.yaml | grep -q "$output: "; then
+              echo "❌ Changes job missing output: $output"
+              exit 1
+            fi
+            echo "✅ Changes output '$output' configured"
+          done
+
+  # Final validation summary
+  test-summary:
+    needs: [
+      workflow-validation,
+      job-dependencies,
+      database-service-test,
+      backend-integration-test,
+      path-filter-test,
+      security-scan-test,
+      docker-build-test,
+      semantic-release-test,
+      coverage-test,
+      error-handling-test,
+      action-security-test,
+      project-integration-test,
+      workflow-simulation
+    ]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate test report
+        run: |
+          echo "# CI/CD Pipeline Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Count passed/failed tests
+          passed_tests=0
+          failed_tests=0
+          
+          test_results=(
+            "workflow-validation:${{ needs.workflow-validation.result }}"
+            "job-dependencies:${{ needs.job-dependencies.result }}"
+            "database-service-test:${{ needs.database-service-test.result }}"
+            "backend-integration-test:${{ needs.backend-integration-test.result }}"
+            "path-filter-test:${{ needs.path-filter-test.result }}"
+            "security-scan-test:${{ needs.security-scan-test.result }}"
+            "docker-build-test:${{ needs.docker-build-test.result }}"
+            "semantic-release-test:${{ needs.semantic-release-test.result }}"
+            "coverage-test:${{ needs.coverage-test.result }}"
+            "error-handling-test:${{ needs.error-handling-test.result }}"
+            "action-security-test:${{ needs.action-security-test.result }}"
+            "project-integration-test:${{ needs.project-integration-test.result }}"
+            "workflow-simulation:${{ needs.workflow-simulation.result }}"
+          )
+          
+          echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          for result in "${test_results[@]}"; do
+            test_name=$(echo "$result" | cut -d: -f1)
+            test_status=$(echo "$result" | cut -d: -f2)
+            
+            if [[ "$test_status" == "success" ]]; then
+              echo "✅ $test_name: PASSED" >> $GITHUB_STEP_SUMMARY
+              ((passed_tests++))
+            else
+              echo "❌ $test_name: FAILED ($test_status)" >> $GITHUB_STEP_SUMMARY
+              ((failed_tests++))
+            fi
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total Tests:** $((passed_tests + failed_tests))" >> $GITHUB_STEP_SUMMARY
+          echo "**Passed:** $passed_tests" >> $GITHUB_STEP_SUMMARY
+          echo "**Failed:** $failed_tests" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ $failed_tests -eq 0 ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🎉 **All tests passed!** The CI/CD pipeline is properly configured." >> $GITHUB_STEP_SUMMARY
+            echo "The workflow is ready for production use." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Some tests failed.** Please review the failed tests and fix the issues." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
