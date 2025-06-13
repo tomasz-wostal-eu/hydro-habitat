@@ -181,13 +181,35 @@ jobs:
       - name: Test image startup
         run: |
           docker compose up -d
-          sleep 30
           
-          # Test backend health
-          curl -f http://localhost:8080/health || exit 1
+          # Wait for services to be ready with retries
+          echo "Waiting for backend to be ready..."
+          for i in {1..30}; do
+            if curl -f http://localhost:8080/health > /dev/null 2>&1; then
+              echo "✅ Backend is ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Backend failed to start"
+              docker compose logs backend
+              exit 1
+            fi
+            sleep 2
+          done
           
-          # Test frontend availability
-          curl -f http://localhost:3000 || exit 1
+          echo "Waiting for frontend to be ready..."
+          for i in {1..30}; do
+            if curl -f http://localhost:3000 > /dev/null 2>&1; then
+              echo "✅ Frontend is ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Frontend failed to start"
+              docker compose logs frontend
+              exit 1
+            fi
+            sleep 2
+          done
           
           docker compose down
           echo "✅ Images tested successfully"
