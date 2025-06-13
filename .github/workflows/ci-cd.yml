@@ -93,21 +93,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.backend == 'true'
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-          POSTGRES_DB: hydro_habitat_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     steps:
       - uses: actions/checkout@v4
 
@@ -126,40 +111,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      - name: Setup database schema
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hydro_habitat_test?sslmode=disable
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
-          
-          # Create database schema
-          PGPASSWORD=postgres psql -h localhost -U postgres -d hydro_habitat_test -c "
-            CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
-            
-            CREATE TABLE IF NOT EXISTS tanks (
-              id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-              name VARCHAR(255) NOT NULL,
-              volume_liters INTEGER NOT NULL CHECK (volume_liters > 0),
-              water VARCHAR(50) NOT NULL,
-              room VARCHAR(255),
-              rack_location VARCHAR(255),
-              inventory_number VARCHAR(255),
-              notes TEXT,
-              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-            
-            CREATE INDEX IF NOT EXISTS idx_tanks_water ON tanks(water);
-            CREATE INDEX IF NOT EXISTS idx_tanks_created_at ON tanks(created_at);
-          "
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Run unit tests
         run: make test-unit
 
-      - name: Run integration tests
+      - name: Run integration tests with Docker Compose
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hydro_habitat_test?sslmode=disable
           CI: true
         run: make test-integration
 
