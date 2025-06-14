@@ -7,12 +7,12 @@ WORKDIR /app
 
 # Copy dependency files and download them.
 # This leverages Docker's layer caching.
-COPY go.mod go.sum ./
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 RUN go mod verify
 
 # Copy the rest of the source code
-COPY . .
+COPY backend/ .
 
 
 # --- Stage 2: Builder Stage ---
