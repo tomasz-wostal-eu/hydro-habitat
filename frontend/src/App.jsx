@@ -42,9 +42,8 @@ const TankManager = () => {
       const response = await axios.get(API_URL);
       setTanks(response.data || []);
       setError(null);
-    } catch (err) {
+    } catch {
       setError('Failed to fetch tanks. The backend might be starting up.');
-      // console.error(err); // Removed console statement for production
     } finally {
       setIsLoading(false);
     }
@@ -78,8 +77,8 @@ const TankManager = () => {
       }
       fetchTanks();
       handleCloseModal();
-    } catch (err) {
-      alert('Error saving tank: ' + (err.response?.data?.error || err.message));
+    } catch (error) {
+      alert('Error saving tank: ' + (error.response?.data?.error || error.message));
     }
   };
 

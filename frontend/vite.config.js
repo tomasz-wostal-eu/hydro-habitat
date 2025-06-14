@@ -7,6 +7,7 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './src/test/setup.js',
+    css: true,
     coverage: {
       reporter: ['text', 'json', 'html'],
       exclude: [
@@ -14,6 +15,9 @@ export default defineConfig({
         'src/test/',
       ],
     },
+  },
+  define: {
+    global: 'globalThis',
   },
   server: {
     port: 5173, // Development port

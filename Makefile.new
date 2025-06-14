@@ -8,7 +8,7 @@ help:
 	@echo "  make down             - Stops and removes all services."
 	@echo "  make logs             - Displays logs for all services."
 	@echo "  make test-unit        - Runs backend unit tests."
-	@echo "  make test-integration - Runs backend integration tests with Docker PostgreSQL (port 5433)."
+	@echo "  make test-integration - Runs backend integration tests against a live database."
 	@echo "  make test-integration-ci - Runs integration tests in CI environment."
 	@echo "  make lint             - Runs linting for both backend and frontend."
 	@echo "  make lint-backend     - Runs Go linting checks."
