@@ -142,12 +142,20 @@ if docker compose up -d; then
     
     # Test frontend availability
     print_step "  → Testing frontend availability"
-    if curl -f http://localhost:80 >/dev/null 2>&1; then
-        print_success "Frontend availability check passed"
-    else
-        print_warning "Frontend availability check failed"
-        docker compose logs frontend | tail -10
-    fi
+    for i in {1..10}; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:80 2>/dev/null || echo "000")
+        if [ "$HTTP_CODE" = "200" ]; then
+            print_success "Frontend availability check passed (HTTP $HTTP_CODE)"
+            break
+        fi
+        if [ $i -eq 10 ]; then
+            print_warning "Frontend availability check failed after 10 attempts"
+            echo "Last HTTP response code: $HTTP_CODE"
+            docker compose logs frontend | tail -10
+        fi
+        echo "Attempt $i/10: Frontend not ready (HTTP $HTTP_CODE), waiting..."
+        sleep 2
+    done
     
     # Show service logs for debugging
     print_step "  → Service logs (last 5 lines each)"
