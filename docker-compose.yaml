@@ -23,8 +23,8 @@ services:
   # Main Go Backend Service (for production)
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/Dockerfile
       target: final-stage # Use the final, minimal stage from the Dockerfile
     container_name: hydro_habitat_backend
     depends_on:
@@ -48,8 +48,8 @@ services:
   # Service for running UNIT tests (no database)
   backend-unit-test:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/Dockerfile
       target: test-stage
     container_name: hydro_habitat_unit_test
     # This service does not depend on the database
@@ -58,8 +58,8 @@ services:
   # Service for running INTEGRATION tests (with database)
   backend-integration-test:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/Dockerfile
       target: test-stage
     container_name: hydro_habitat_integration_test
     depends_on:

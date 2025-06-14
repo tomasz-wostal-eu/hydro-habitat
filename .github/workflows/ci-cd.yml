@@ -1,0 +1,478 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, qa, dev, develop]
+  pull_request:
+    branches: [main, qa, dev, develop]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+env:
+  NODE_VERSION: '20'
+  DOCKER_BUILDKIT: 1
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Determine environment and deployment target
+  environment:
+    name: Determine Environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      deploy: ${{ steps.env.outputs.deploy }}
+      version-type: ${{ steps.env.outputs.version-type }}
+      k8s-namespace: ${{ steps.env.outputs.k8s-namespace }}
+    steps:
+      - name: Determine deployment environment
+        id: env
+        run: |
+          case "${{ github.ref_name }}" in
+            "main")
+              echo "environment=production" >> $GITHUB_OUTPUT
+              echo "deploy=true" >> $GITHUB_OUTPUT
+              echo "version-type=release" >> $GITHUB_OUTPUT
+              echo "k8s-namespace=hydro-habitat-prod" >> $GITHUB_OUTPUT
+              ;;
+            "qa")
+              echo "environment=qa" >> $GITHUB_OUTPUT
+              echo "deploy=true" >> $GITHUB_OUTPUT
+              echo "version-type=prerelease" >> $GITHUB_OUTPUT
+              echo "k8s-namespace=hydro-habitat-qa" >> $GITHUB_OUTPUT
+              ;;
+            "dev")
+              echo "environment=development" >> $GITHUB_OUTPUT
+              echo "deploy=true" >> $GITHUB_OUTPUT
+              echo "version-type=prerelease" >> $GITHUB_OUTPUT
+              echo "k8s-namespace=hydro-habitat-dev" >> $GITHUB_OUTPUT
+              ;;
+            "develop")
+              echo "environment=local" >> $GITHUB_OUTPUT
+              echo "deploy=true" >> $GITHUB_OUTPUT
+              echo "version-type=pre-prerelease" >> $GITHUB_OUTPUT
+              echo "k8s-namespace=hydro-habitat-local" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "environment=none" >> $GITHUB_OUTPUT
+              echo "deploy=false" >> $GITHUB_OUTPUT
+              echo "version-type=none" >> $GITHUB_OUTPUT
+              echo "k8s-namespace=none" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+  # Determine what changed to run only necessary jobs
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      docker: ${{ steps.filter.outputs.docker }}
+      k8s: ${{ steps.filter.outputs.k8s }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'Makefile'
+              - '.github/workflows/**'
+            frontend:
+              - 'frontend/**'
+              - 'package*.json'
+              - '.github/workflows/**'
+            docker:
+              - 'docker-compose.yaml'
+              - '**/Dockerfile*'
+              - '.github/workflows/**'
+            k8s:
+              - 'k8s/**'
+              - 'helm/**'
+              - '.github/workflows/**'
+
+  # Backend quality checks
+  # Note: All backend operations use Docker containers, not host Go installation
+  backend-quality:
+    name: Backend Quality
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run backend linting
+        run: make lint-backend
+
+      - name: Run backend security scan
+        run: make security-backend
+
+  # Backend tests
+  # Note: All backend operations use Docker containers, not host Go installation
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run unit tests
+        run: make test-unit
+
+      - name: Run integration tests with Docker Compose
+        env:
+          CI: true
+        run: make test-integration
+
+  # Frontend quality checks
+  frontend-quality:
+    name: Frontend Quality
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Run frontend linting
+        run: make lint-frontend
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm run test:run
+
+  # Docker build and push
+  docker-build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [environment, backend-quality, backend-tests, frontend-quality]
+    if: |
+      always() && 
+      (needs.backend-quality.result == 'success' || needs.backend-quality.result == 'skipped') &&
+      (needs.backend-tests.result == 'success' || needs.backend-tests.result == 'skipped') &&
+      (needs.frontend-quality.result == 'success' || needs.frontend-quality.result == 'skipped')
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker images
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test image startup
+        run: |
+          docker compose up -d
+          
+          # Wait for services to be ready with retries
+          echo "Waiting for backend to be ready..."
+          for i in {1..30}; do
+            if curl -f http://localhost:80/health > /dev/null 2>&1; then
+              echo "✅ Backend is ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Backend failed to start"
+              docker compose logs backend
+              exit 1
+            fi
+            sleep 2
+          done
+          
+          echo "Waiting for frontend to be ready..."
+          for i in {1..30}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:80 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Frontend is ready (HTTP $HTTP_CODE)"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Frontend failed to start after 30 attempts"
+              echo "Last HTTP response code: $HTTP_CODE"
+              echo "Frontend logs:"
+              docker compose logs frontend
+              echo "Testing frontend connection:"
+              curl -v http://localhost:80 || true
+              exit 1
+            fi
+            echo "Attempt $i/30: Frontend not ready (HTTP $HTTP_CODE), waiting..."
+            sleep 2
+          done
+          
+          docker compose down
+          echo "✅ Images tested successfully"
+
+  # Semantic release and versioning
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' && 
+      contains(fromJson('["main", "qa", "dev", "develop"]'), github.ref_name)
+    needs: [environment, docker-build]
+    outputs:
+      new-release-published: ${{ steps.semantic.outputs.new-release-published }}
+      new-release-version: ${{ steps.semantic.outputs.new-release-version }}
+      new-release-git-tag: ${{ steps.semantic.outputs.new-release-git-tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install semantic-release
+        run: |
+          npm install -g semantic-release \
+            @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator \
+            @semantic-release/changelog \
+            @semantic-release/github \
+            @semantic-release/git \
+            @semantic-release/exec \
+            conventional-changelog-conventionalcommits
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create semantic-release config
+        run: |
+          cat > .releaserc.json << 'EOF'
+          {
+            "branches": [
+              "+([0-9])?(.{+([0-9]),x}).x",
+              "main",
+              {
+                "name": "qa",
+                "prerelease": "rc"
+              },
+              {
+                "name": "dev", 
+                "prerelease": "alpha"
+              },
+              {
+                "name": "develop",
+                "prerelease": "dev"
+              }
+            ],
+            "plugins": [
+              "@semantic-release/commit-analyzer",
+              "@semantic-release/release-notes-generator",
+              [
+                "@semantic-release/changelog",
+                {
+                  "changelogFile": "CHANGELOG.md"
+                }
+              ],
+              [
+                "@semantic-release/exec",
+                {
+                  "prepareCmd": "echo '${nextRelease.version}' > VERSION"
+                }
+              ],
+              [
+                "@semantic-release/git",
+                {
+                  "assets": ["CHANGELOG.md", "VERSION", "frontend/package.json", "frontend/package-lock.json"],
+                  "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+                }
+              ],
+              "@semantic-release/github"
+            ]
+          }
+          EOF
+
+      - name: Run semantic-release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release --dry-run=false | tee release-output.txt
+          if grep -q "Published release" release-output.txt; then
+            echo "new-release-published=true" >> $GITHUB_OUTPUT
+            VERSION=$(grep "Published release" release-output.txt | sed -n 's/.*Published release \([^ ]*\).*/\1/p')
+            echo "new-release-version=$VERSION" >> $GITHUB_OUTPUT
+            echo "new-release-git-tag=v$VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "new-release-published=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Update issue tracking
+  update-issues:
+    name: Update Issue Tracking
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: [environment, release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract issue numbers from commit messages
+        id: issues
+        run: |
+          # Extract issue numbers from commit messages (supports #123, fixes #123, closes #123, etc.)
+          git log --oneline ${{ github.event.before }}..${{ github.sha }} | \
+          grep -oE '(fix|fixes|close|closes|resolve|resolves|#)[[:space:]]*#?([0-9]+)' | \
+          grep -oE '[0-9]+' | sort -u > issue_numbers.txt || true
+          
+          if [ -s issue_numbers.txt ]; then
+            echo "issues=$(cat issue_numbers.txt | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+            echo "has-issues=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-issues=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update issues
+        if: steps.issues.outputs.has-issues == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IFS=',' read -ra ISSUE_ARRAY <<< "${{ steps.issues.outputs.issues }}"
+          for issue in "${ISSUE_ARRAY[@]}"; do
+            if [ ! -z "$issue" ]; then
+              echo "Updating issue #$issue"
+              gh issue comment $issue --body "🚀 This issue has been addressed in commit ${{ github.sha }} and deployed to ${{ needs.environment.outputs.environment }} environment."
+              
+              # Close issue if this is main branch (production)
+              if [ "${{ github.ref_name }}" = "main" ]; then
+                gh issue close $issue --comment "✅ Resolved in production release ${{ needs.release.outputs.new-release-version }}"
+              fi
+            fi
+          done
+
+  # Deploy to Kubernetes
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: [environment, release, docker-build]
+    if: |
+      needs.environment.outputs.deploy == 'true' && 
+      github.event_name == 'push' &&
+      (needs.release.outputs.new-release-published == 'true' || github.ref_name == 'develop')
+    environment:
+      name: ${{ needs.environment.outputs.environment }}
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: '1.28.0'
+
+      - name: Configure kubectl for local cluster
+        if: needs.environment.outputs.environment == 'local'
+        run: |
+          # Configure kubectl for local development cluster
+          # This assumes you have a local cluster setup (minikube, kind, etc.)
+          echo "Configuring kubectl for local cluster..."
+          # Add your local cluster configuration here
+
+      - name: Configure kubectl for remote clusters
+        if: needs.environment.outputs.environment != 'local'
+        run: |
+          # Configure kubectl for remote clusters
+          echo "Configuring kubectl for ${{ needs.environment.outputs.environment }} cluster..."
+          # Add your remote cluster configuration here
+          # Example: echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace ${{ needs.environment.outputs.k8s-namespace }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy with Helm
+        id: deploy
+        run: |
+          # Set version for deployment
+          if [ "${{ needs.release.outputs.new-release-published }}" = "true" ]; then
+            VERSION="${{ needs.release.outputs.new-release-version }}"
+          else
+            VERSION="${{ github.ref_name }}-${{ github.sha }}"
+          fi
+          
+          # Deploy using Helm
+          helm upgrade --install hydro-habitat ./helm/hydro-habitat \
+            --namespace ${{ needs.environment.outputs.k8s-namespace }} \
+            --set image.tag=${VERSION} \
+            --set environment=${{ needs.environment.outputs.environment }} \
+            --set ingress.enabled=true \
+            --set ingress.hosts[0].host=hydro-habitat-${{ needs.environment.outputs.environment }}.local \
+            --wait --timeout=10m
+          
+          # Get deployment URL
+          INGRESS_HOST=$(kubectl get ingress -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].spec.rules[0].host}')
+          echo "url=https://${INGRESS_HOST}" >> $GITHUB_OUTPUT
+          
+          echo "✅ Deployed to ${{ needs.environment.outputs.environment }} environment"
+
+      - name: Run smoke tests
+        run: |
+          # Add smoke tests for the deployed application
+          echo "Running smoke tests against deployed application..."
+          # kubectl run smoke-test --image=appropriate/curl --rm -i --restart=Never -- curl -f ${{ steps.deploy.outputs.url }}/health

@@ -1,5 +1,10 @@
 import '@testing-library/jest-dom';
 import { vi } from 'vitest';
+// Add React testing utilities
+import { configure } from '@testing-library/react';
+
+// Configure testing library for better async behavior
+configure({ testIdAttribute: 'data-testid' });
 
 // Mock window.confirm and window.alert for tests
 global.confirm = vi.fn(() => true);
