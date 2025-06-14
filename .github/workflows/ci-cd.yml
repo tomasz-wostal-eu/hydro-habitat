@@ -494,7 +494,7 @@ jobs:
           }
           
           echo "✅ Kubernetes configuration successful"
-
+          
       - name: Create namespace if not exists
         run: |
           kubectl create namespace ${{ needs.environment.outputs.k8s-namespace }} --dry-run=client -o yaml | kubectl apply -f -
@@ -520,17 +520,6 @@ jobs:
             -p '{"imagePullSecrets": [{"name": "regcred"}]}'
           
           echo "✅ Docker registry access configured"
-
-      - name: Deploy with Helm
-        id: deploy
-        run: |
-          # Set version for deployment
-          if [ "${{ needs.release.outputs.new-release-published }}" = "true" ]; then
-            VERSION="${{ needs.release.outputs.new-release-version }}"
-          else
-            VERSION="${{ github.ref_name }}-${{ github.sha }}"
-          fi
-          
           echo "Deploying version: ${VERSION}"
           echo "Namespace: ${{ needs.environment.outputs.k8s-namespace }}"
           echo "Environment: ${{ needs.environment.outputs.environment }}"
@@ -543,14 +532,6 @@ jobs:
           
           # Validate Helm chart
           helm lint ./helm/hydro-habitat
-          
-          # Deploy using Helm
-          helm upgrade --install hydro-habitat ./helm/hydro-habitat \
-            --namespace ${{ needs.environment.outputs.k8s-namespace }} \
-            --set image.tag=${VERSION} \
-            --set environment=${{ needs.environment.outputs.environment }} \
-            --set ingress.enabled=true \
-            --set ingress.hosts[0].host=hydro-habitat-${{ needs.environment.outputs.environment }}.local \
             --wait --timeout=10m \
             --debug
           
@@ -572,7 +553,6 @@ jobs:
               echo "Application deployed at: http://${SERVICE_IP}"
             fi
           fi
-          
           echo "✅ Deployed to ${{ needs.environment.outputs.environment }} environment"
 
       - name: Run smoke tests
