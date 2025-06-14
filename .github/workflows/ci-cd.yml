@@ -414,7 +414,7 @@ jobs:
   # Deploy to Kubernetes
   deploy:
     name: Deploy to Kubernetes
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [environment, release, docker-build]
     if: |
       false &&
@@ -524,14 +524,6 @@ jobs:
 
       - name: Deploy with Argo Rollouts
         id: deploy
-        run: |
-          # Set version for deployment
-          if [ "${{ needs.release.outputs.new-release-published }}" = "true" ]; then
-            VERSION="${{ needs.release.outputs.new-release-version }}"
-          else
-            VERSION="${{ github.ref_name }}-${{ github.sha }}"
-          fi
-          
           echo "Preparing Argo Rollouts deployment for version: ${VERSION}"
           echo "Namespace: ${{ needs.environment.outputs.k8s-namespace }}"
           echo "Environment: ${{ needs.environment.outputs.environment }}"
@@ -595,6 +587,19 @@ jobs:
             fi
           fi
           
+          # Get deployment URL
+          INGRESS_HOST=$(kubectl get ingress -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null)
+          if [ -n "$INGRESS_HOST" ]; then
+            echo "url=https://${INGRESS_HOST}" >> $GITHUB_OUTPUT
+            echo "Application deployed at: https://${INGRESS_HOST}"
+          else
+            echo "Warning: No ingress found, application may be accessible via service"
+            SERVICE_IP=$(kubectl get service -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -n "$SERVICE_IP" ]; then
+              echo "url=http://${SERVICE_IP}" >> $GITHUB_OUTPUT
+              echo "Application deployed at: http://${SERVICE_IP}"
+            fi
+          fi
           echo "✅ Deployed to ${{ needs.environment.outputs.environment }} environment"
 
       - name: Run smoke tests
