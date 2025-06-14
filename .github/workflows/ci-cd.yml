@@ -1,0 +1,198 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, qa, dev, develop]
+  pull_request:
+    branches: [main, qa, dev, develop]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+env:
+  GO_VERSION: '1.21'
+  NODE_VERSION: '20'
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  # Determine what changed to run only necessary jobs
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - '.github/workflows/**'
+            frontend:
+              - 'frontend/**'
+              - 'package*.json'
+              - '.github/workflows/**'
+            docker:
+              - 'docker-compose.yaml'
+              - '**/Dockerfile*'
+              - '.github/workflows/**'
+
+  # Backend quality checks
+  backend-quality:
+    name: Backend Quality
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run backend linting
+        run: make lint-backend
+
+      - name: Run backend security scan
+        run: make security-backend
+
+  # Backend tests
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run unit tests
+        run: make test-unit
+
+      - name: Run integration tests with Docker Compose
+        env:
+          CI: true
+        run: make test-integration
+
+  # Frontend quality checks
+  frontend-quality:
+    name: Frontend Quality
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Run frontend linting
+        run: make lint-frontend
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm run test:run
+
+  # Docker build and test
+  docker-build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [backend-quality, backend-tests, frontend-quality]
+    if: |
+      always() && 
+      (needs.backend-quality.result == 'success' || needs.backend-quality.result == 'skipped') &&
+      (needs.backend-tests.result == 'success' || needs.backend-tests.result == 'skipped') &&
+      (needs.frontend-quality.result == 'success' || needs.frontend-quality.result == 'skipped')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build images
+        run: |
+          docker compose build --parallel
+          echo "✅ Docker images built successfully"
+
+      - name: Test image startup
+        run: |
+          docker compose up -d
+          
+          # Wait for services to be ready with retries
+          echo "Waiting for backend to be ready..."
+          for i in {1..30}; do
+            if curl -f http://localhost:8080/health > /dev/null 2>&1; then
+              echo "✅ Backend is ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Backend failed to start"
+              docker compose logs backend
+              exit 1
+            fi
+            sleep 2
+          done
+          
+          echo "Waiting for frontend to be ready..."
+          for i in {1..30}; do
+            if curl -f http://localhost:3000 > /dev/null 2>&1; then
+              echo "✅ Frontend is ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Frontend failed to start"
+              docker compose logs frontend
+              exit 1
+            fi
+            sleep 2
+          done
+          
+          docker compose down
+          echo "✅ Images tested successfully"
