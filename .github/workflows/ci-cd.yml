@@ -414,7 +414,7 @@ jobs:
   # Deploy to Kubernetes
   deploy:
     name: Deploy to Kubernetes
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [environment, release, docker-build]
     if: |
       needs.environment.outputs.deploy == 'true' && 
@@ -427,58 +427,132 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: '3.12.0'
+        run: |
+          # Check if Helm is already installed on self-hosted runner
+          if command -v helm &> /dev/null; then
+            echo "Helm is already installed:"
+            helm version
+          else
+            echo "Installing Helm..."
+            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
 
       - name: Set up kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: '1.28.0'
-
-      - name: Configure kubectl for local cluster
-        if: needs.environment.outputs.environment == 'local'
         run: |
-          # Configure kubectl for local development cluster
-          # This assumes you have a local cluster setup (minikube, kind, etc.)
-          echo "Configuring kubectl for local cluster..."
-          # Add your local cluster configuration here
+          # Check if kubectl is already installed on self-hosted runner
+          if command -v kubectl &> /dev/null; then
+            echo "kubectl is already installed:"
+            kubectl version --client
+          else
+            echo "Installing kubectl..."
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/
+          fi
 
-      - name: Configure kubectl for remote clusters
-        if: needs.environment.outputs.environment != 'local'
+      - name: Configure kubectl for self-hosted runner
         run: |
-          # Configure kubectl for remote clusters
-          echo "Configuring kubectl for ${{ needs.environment.outputs.environment }} cluster..."
-          # Add your remote cluster configuration here
-          # Example: echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
-
+          echo "Configuring kubectl for ${{ needs.environment.outputs.environment }} environment..."
+          
+          # Option 1: Use existing kubeconfig on self-hosted runner
+          if [ -f ~/.kube/config ]; then
+            echo "Using existing kubeconfig at ~/.kube/config"
+            kubectl config current-context
+          elif [ -n "$KUBECONFIG" ] && [ -f "$KUBECONFIG" ]; then
+            echo "Using kubeconfig from KUBECONFIG env var: $KUBECONFIG"
+            kubectl config current-context
+          else
+            echo "No kubeconfig found. Checking for stored kubeconfig..."
+            
+            # Option 2: Use kubeconfig from GitHub secrets
+            if [ -n "${{ secrets.KUBECONFIG }}" ]; then
+              echo "Setting up kubeconfig from GitHub secrets..."
+              mkdir -p ~/.kube
+              echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+              chmod 600 ~/.kube/config
+            else
+              echo "Error: No Kubernetes configuration found!"
+              echo "Please either:"
+              echo "1. Set up kubectl on your self-hosted runner"
+              echo "2. Add KUBECONFIG as a GitHub secret (base64 encoded)"
+              exit 1
+            fi
+          fi
+          
+          # Verify kubectl is working
+          echo "Testing Kubernetes connection..."
+          kubectl version --client
+          kubectl cluster-info
+          
+          # Check if we can access the cluster
+          kubectl get nodes || {
+            echo "Error: Cannot access Kubernetes cluster"
+            echo "Current context: $(kubectl config current-context)"
+            echo "Available contexts:"
+            kubectl config get-contexts
+            exit 1
+          }
+          
+          echo "✅ Kubernetes configuration successful"
+          
       - name: Create namespace if not exists
         run: |
           kubectl create namespace ${{ needs.environment.outputs.k8s-namespace }} --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Deploy with Helm
-        id: deploy
+      - name: Configure Docker registry access for Kubernetes
         run: |
-          # Set version for deployment
-          if [ "${{ needs.release.outputs.new-release-published }}" = "true" ]; then
-            VERSION="${{ needs.release.outputs.new-release-version }}"
-          else
-            VERSION="${{ github.ref_name }}-${{ github.sha }}"
+          # Configure image pull secrets for the namespace
+          NAMESPACE="${{ needs.environment.outputs.k8s-namespace }}"
+          
+          # Remove existing secret if it exists (to update credentials)
+          kubectl delete secret regcred -n $NAMESPACE --ignore-not-found=true
+          
+          # Create Docker registry secret for GHCR access
+          echo "Creating Docker registry secret for GHCR access..."
+          kubectl create secret docker-registry regcred \
+            --docker-server=${{ env.REGISTRY }} \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }} \
+            --namespace=$NAMESPACE
+          
+          # Patch the default service account to use the image pull secret
+          kubectl patch serviceaccount default -n $NAMESPACE \
+            -p '{"imagePullSecrets": [{"name": "regcred"}]}'
+          
+          echo "✅ Docker registry access configured"
+          echo "Deploying version: ${VERSION}"
+          echo "Namespace: ${{ needs.environment.outputs.k8s-namespace }}"
+          echo "Environment: ${{ needs.environment.outputs.environment }}"
+          
+          # Check if Helm chart exists
+          if [ ! -d "./helm/hydro-habitat" ]; then
+            echo "Error: Helm chart not found at ./helm/hydro-habitat"
+            exit 1
           fi
           
-          # Deploy using Helm
-          helm upgrade --install hydro-habitat ./helm/hydro-habitat \
-            --namespace ${{ needs.environment.outputs.k8s-namespace }} \
-            --set image.tag=${VERSION} \
-            --set environment=${{ needs.environment.outputs.environment }} \
-            --set ingress.enabled=true \
-            --set ingress.hosts[0].host=hydro-habitat-${{ needs.environment.outputs.environment }}.local \
-            --wait --timeout=10m
+          # Validate Helm chart
+          helm lint ./helm/hydro-habitat
+            --wait --timeout=10m \
+            --debug
+          
+          # Verify deployment
+          kubectl get pods -n ${{ needs.environment.outputs.k8s-namespace }}
+          kubectl get services -n ${{ needs.environment.outputs.k8s-namespace }}
+          kubectl get ingress -n ${{ needs.environment.outputs.k8s-namespace }}
           
           # Get deployment URL
-          INGRESS_HOST=$(kubectl get ingress -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].spec.rules[0].host}')
-          echo "url=https://${INGRESS_HOST}" >> $GITHUB_OUTPUT
-          
+          INGRESS_HOST=$(kubectl get ingress -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null)
+          if [ -n "$INGRESS_HOST" ]; then
+            echo "url=https://${INGRESS_HOST}" >> $GITHUB_OUTPUT
+            echo "Application deployed at: https://${INGRESS_HOST}"
+          else
+            echo "Warning: No ingress found, application may be accessible via service"
+            SERVICE_IP=$(kubectl get service -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -n "$SERVICE_IP" ]; then
+              echo "url=http://${SERVICE_IP}" >> $GITHUB_OUTPUT
+              echo "Application deployed at: http://${SERVICE_IP}"
+            fi
+          fi
           echo "✅ Deployed to ${{ needs.environment.outputs.environment }} environment"
 
       - name: Run smoke tests

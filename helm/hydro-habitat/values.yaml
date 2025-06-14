@@ -2,11 +2,12 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/twostal/hydro-habitat
+  repository: ghcr.io/tomasz-wostal-eu/hydro-habitat
   pullPolicy: IfNotPresent
   tag: ""
 
-imagePullSecrets: []
+imagePullSecrets:
+  - name: regcred
 nameOverride: ""
 fullnameOverride: ""
 
