@@ -524,6 +524,14 @@ jobs:
 
       - name: Deploy with Argo Rollouts
         id: deploy
+        run: |
+          # Set version for deployment
+          if [ "${{ needs.release.outputs.new-release-published }}" = "true" ]; then
+            VERSION="${{ needs.release.outputs.new-release-version }}"
+          else
+            VERSION="${{ github.ref_name }}-${{ github.sha }}"
+          fi
+          
           echo "Preparing Argo Rollouts deployment for version: ${VERSION}"
           echo "Namespace: ${{ needs.environment.outputs.k8s-namespace }}"
           echo "Environment: ${{ needs.environment.outputs.environment }}"
