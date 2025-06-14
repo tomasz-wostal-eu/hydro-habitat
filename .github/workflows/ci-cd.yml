@@ -486,3 +486,4 @@ jobs:
           # Add smoke tests for the deployed application
           echo "Running smoke tests against deployed application..."
           # kubectl run smoke-test --image=appropriate/curl --rm -i --restart=Never -- curl -f ${{ steps.deploy.outputs.url }}/health
+
