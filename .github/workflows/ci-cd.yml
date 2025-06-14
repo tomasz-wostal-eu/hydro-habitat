@@ -417,6 +417,7 @@ jobs:
     runs-on: self-hosted
     needs: [environment, release, docker-build]
     if: |
+      false &&
       needs.environment.outputs.deploy == 'true' && 
       github.event_name == 'push' &&
       (needs.release.outputs.new-release-published == 'true' || github.ref_name == 'develop')
@@ -520,7 +521,18 @@ jobs:
             -p '{"imagePullSecrets": [{"name": "regcred"}]}'
           
           echo "✅ Docker registry access configured"
-          echo "Deploying version: ${VERSION}"
+
+      - name: Deploy with Argo Rollouts
+        id: deploy
+        run: |
+          # Set version for deployment
+          if [ "${{ needs.release.outputs.new-release-published }}" = "true" ]; then
+            VERSION="${{ needs.release.outputs.new-release-version }}"
+          else
+            VERSION="${{ github.ref_name }}-${{ github.sha }}"
+          fi
+          
+          echo "Preparing Argo Rollouts deployment for version: ${VERSION}"
           echo "Namespace: ${{ needs.environment.outputs.k8s-namespace }}"
           echo "Environment: ${{ needs.environment.outputs.environment }}"
           
@@ -532,13 +544,56 @@ jobs:
           
           # Validate Helm chart
           helm lint ./helm/hydro-habitat
-            --wait --timeout=10m \
-            --debug
+          
+          # Check if Argo Rollouts is installed
+          if ! kubectl get crd rollouts.argoproj.io &>/dev/null; then
+            echo "Warning: Argo Rollouts CRD not found. Installing Argo Rollouts..."
+            kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
+            kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+            
+            # Wait for Argo Rollouts to be ready
+            kubectl wait --for=condition=available --timeout=300s deployment/argo-rollouts-controller -n argo-rollouts
+          fi
+          
+          # Generate Helm template with Rollout instead of Deployment
+          helm template hydro-habitat ./helm/hydro-habitat \
+            --namespace ${{ needs.environment.outputs.k8s-namespace }} \
+            --set image.tag=${VERSION} \
+            --set environment=${{ needs.environment.outputs.environment }} \
+            --set ingress.enabled=true \
+            --set ingress.hosts[0].host=hydro-habitat-${{ needs.environment.outputs.environment }}.local \
+            --set rollout.enabled=true \
+            --output-dir ./rendered-manifests
+          
+          # Apply the manifests (Argo Rollouts will handle the deployment)
+          kubectl apply -f ./rendered-manifests/hydro-habitat/templates/ -n ${{ needs.environment.outputs.k8s-namespace }}
+          
+          # Wait for rollout to complete
+          echo "Waiting for Argo Rollout to complete..."
+          kubectl wait --for=condition=Progressing --timeout=600s rollout/hydro-habitat -n ${{ needs.environment.outputs.k8s-namespace }} || true
+          kubectl wait --for=condition=Available --timeout=600s rollout/hydro-habitat -n ${{ needs.environment.outputs.k8s-namespace }}
           
           # Verify deployment
+          echo "Verifying Argo Rollout deployment..."
+          kubectl get rollouts -n ${{ needs.environment.outputs.k8s-namespace }}
+          kubectl describe rollout hydro-habitat -n ${{ needs.environment.outputs.k8s-namespace }}
           kubectl get pods -n ${{ needs.environment.outputs.k8s-namespace }}
           kubectl get services -n ${{ needs.environment.outputs.k8s-namespace }}
           kubectl get ingress -n ${{ needs.environment.outputs.k8s-namespace }}
+          
+          # Get deployment URL
+          INGRESS_HOST=$(kubectl get ingress -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null)
+          if [ -n "$INGRESS_HOST" ]; then
+            echo "url=https://${INGRESS_HOST}" >> $GITHUB_OUTPUT
+            echo "Application deployed at: https://${INGRESS_HOST}"
+          else
+            echo "Warning: No ingress found, application may be accessible via service"
+            SERVICE_IP=$(kubectl get service -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -n "$SERVICE_IP" ]; then
+              echo "url=http://${SERVICE_IP}" >> $GITHUB_OUTPUT
+              echo "Application deployed at: http://${SERVICE_IP}"
+            fi
+          fi
           
           # Get deployment URL
           INGRESS_HOST=$(kubectl get ingress -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null)
@@ -558,6 +613,26 @@ jobs:
       - name: Run smoke tests
         run: |
           # Add smoke tests for the deployed application
-          echo "Running smoke tests against deployed application..."
-          # kubectl run smoke-test --image=appropriate/curl --rm -i --restart=Never -- curl -f ${{ steps.deploy.outputs.url }}/health
+          echo "Running smoke tests against Argo Rollouts deployment..."
+          
+          # Wait for rollout to be fully available
+          kubectl wait --for=condition=Available --timeout=300s rollout/hydro-habitat -n ${{ needs.environment.outputs.k8s-namespace }}
+          
+          # Get the service endpoint
+          if [ -n "${{ steps.deploy.outputs.url }}" ]; then
+            ENDPOINT="${{ steps.deploy.outputs.url }}"
+          else
+            # Fallback to service endpoint
+            SERVICE_IP=$(kubectl get service hydro-habitat-stable -n ${{ needs.environment.outputs.k8s-namespace }} -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
+            ENDPOINT="http://${SERVICE_IP}:80"
+          fi
+          
+          echo "Testing endpoint: $ENDPOINT"
+          
+          # Run basic health check
+          kubectl run smoke-test-${{ github.run_id }} --image=curlimages/curl --rm -i --restart=Never \
+            --namespace=${{ needs.environment.outputs.k8s-namespace }} \
+            -- curl -f "$ENDPOINT/health" --max-time 30
+          
+          echo "✅ Smoke tests completed successfully"
 

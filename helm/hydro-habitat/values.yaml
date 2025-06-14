@@ -51,6 +51,31 @@ affinity: {}
 # Environment-specific configuration
 environment: local
 
+# Argo Rollouts configuration
+rollout:
+  enabled: false
+  strategy:
+    canary:
+      steps:
+      - setWeight: 20
+      - pause: {}
+      - setWeight: 40
+      - pause: {duration: 10}
+      - setWeight: 60
+      - pause: {duration: 10}
+      - setWeight: 80
+      - pause: {duration: 10}
+      canaryService: hydro-habitat-canary
+      stableService: hydro-habitat-stable
+    analysis:
+      templates:
+      - templateName: success-rate
+      args:
+      - name: service-name
+        value: hydro-habitat-canary
+      startingStep: 2
+      successCondition: result[0] >= 0.95
+
 # Database configuration
 postgresql:
   enabled: true
