@@ -142,7 +142,7 @@ if docker compose up -d; then
     
     # Test frontend availability
     print_step "  → Testing frontend availability"
-    if curl -f http://localhost:3000 >/dev/null 2>&1; then
+    if curl -f http://localhost:80 >/dev/null 2>&1; then
         print_success "Frontend availability check passed"
     else
         print_warning "Frontend availability check failed"
