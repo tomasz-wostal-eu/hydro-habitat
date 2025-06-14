@@ -1,0 +1,59 @@
+# Default values for hydro-habitat.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/twostal/hydro-habitat
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  backendPort: 8080
+  frontendPort: 3000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: hydro-habitat.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources: {}
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Environment-specific configuration
+environment: local
+
+# Database configuration
+postgresql:
+  enabled: true
+  auth:
+    database: hydro_habitat
+    username: hydro
+    password: hydrosecret
