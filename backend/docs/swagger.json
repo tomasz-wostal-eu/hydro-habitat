@@ -1,0 +1,346 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "This is the API for the Hydro Habitat application.",
+        "title": "Hydro Habitat API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/api/v1",
+    "paths": {
+        "/health": {
+            "get": {
+                "description": "Health check endpoint to verify the API is running",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Health check",
+                "responses": {
+                    "200": {
+                        "description": "Service is healthy",
+                        "schema": {
+                            "$ref": "#/definitions/api.HealthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/tanks": {
+            "get": {
+                "description": "Retrieves a list of all tanks.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tanks"
+                ],
+                "summary": "Get all tanks",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/domain.Tank"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Adds a new tank to the system inventory.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tanks"
+                ],
+                "summary": "Create a new tank",
+                "parameters": [
+                    {
+                        "description": "Tank to create",
+                        "name": "tank",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/domain.CreateTankDTO"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/domain.Tank"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/tanks/{id}": {
+            "get": {
+                "description": "Retrieves a single tank by its UUID.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tanks"
+                ],
+                "summary": "Get a tank by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tank ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/domain.Tank"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Updates an existing tank.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tanks"
+                ],
+                "summary": "Update a tank",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tank ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Tank data to update",
+                        "name": "tank",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/domain.UpdateTankDTO"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/domain.Tank"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Deletes a tank by its UUID.",
+                "tags": [
+                    "tanks"
+                ],
+                "summary": "Delete a tank",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Tank ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.HealthResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "example": "ok"
+                }
+            }
+        },
+        "domain.CreateTankDTO": {
+            "type": "object",
+            "required": [
+                "name",
+                "volume_liters",
+                "water"
+            ],
+            "properties": {
+                "inventory_number": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "rack_location": {
+                    "type": "string"
+                },
+                "room": {
+                    "type": "string"
+                },
+                "volume_liters": {
+                    "type": "integer"
+                },
+                "water": {
+                    "enum": [
+                        "tap",
+                        "ro",
+                        "rodi"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.WaterType"
+                        }
+                    ]
+                }
+            }
+        },
+        "domain.Tank": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "inventory_number": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "rack_location": {
+                    "type": "string"
+                },
+                "room": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "volume_liters": {
+                    "type": "integer"
+                },
+                "water": {
+                    "$ref": "#/definitions/domain.WaterType"
+                }
+            }
+        },
+        "domain.UpdateTankDTO": {
+            "type": "object",
+            "required": [
+                "name",
+                "volume_liters",
+                "water"
+            ],
+            "properties": {
+                "inventory_number": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "rack_location": {
+                    "type": "string"
+                },
+                "room": {
+                    "type": "string"
+                },
+                "volume_liters": {
+                    "type": "integer"
+                },
+                "water": {
+                    "enum": [
+                        "tap",
+                        "ro",
+                        "rodi"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.WaterType"
+                        }
+                    ]
+                }
+            }
+        },
+        "domain.WaterType": {
+            "type": "string",
+            "enum": [
+                "tap",
+                "ro",
+                "rodi"
+            ],
+            "x-enum-varnames": [
+                "WaterTypeTap",
+                "WaterTypeRO",
+                "WaterTypeRODI"
+            ]
+        }
+    }
+}

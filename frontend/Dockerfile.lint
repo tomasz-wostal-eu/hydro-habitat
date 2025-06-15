@@ -1,0 +1,16 @@
+# Frontend Linting and Formatting Dockerfile
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install ALL dependencies (including dev dependencies for linting)
+RUN npm ci --legacy-peer-deps
+
+# Copy source code
+COPY . .
+
+# Default command for linting
+CMD ["npm", "run", "lint"]

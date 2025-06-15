@@ -1,0 +1,17 @@
+# Test-specific Dockerfile for frontend
+FROM node:24-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies (including dev dependencies for testing)
+RUN npm ci --legacy-peer-deps
+
+# Copy source code
+COPY . .
+
+# Default command runs tests
+CMD ["npm", "run", "test:run"]

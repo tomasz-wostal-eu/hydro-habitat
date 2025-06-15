@@ -1,0 +1,132 @@
+services:
+  # PostgreSQL Database Service
+  postgres:
+    image: postgres:16-alpine
+    container_name: hydro_habitat_db
+    hostname: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hydro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hydrosecret}
+      POSTGRES_DB: ${POSTGRES_DB:-hydro_habitat}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hydro} -d ${POSTGRES_DB:-hydro_habitat}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Main Go Backend Service (for production)
+  backend:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+      target: final-stage # Use the final, minimal stage from the Dockerfile
+    container_name: hydro_habitat_backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-hydro}:${POSTGRES_PASSWORD:-hydrosecret}@postgres:5432/${POSTGRES_DB:-hydro_habitat}?sslmode=disable"
+      GIN_MODE: "release"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O- http://localhost:8080/health || wget --no-verbose --tries=1 -O- http://127.0.0.1:8080/health || curl -f -s http://localhost:8080/health || curl -f -s http://127.0.0.1:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    restart: unless-stopped
+
+  # --- Test Services ---
+
+  # Service for running UNIT tests (no database)
+  backend-unit-test:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+      target: test-stage
+    container_name: hydro_habitat_unit_test
+    # This service does not depend on the database
+    command: go test -v ./api ./config ./domain ./docs ./store
+
+  # Service for running INTEGRATION tests (with database)
+  backend-integration-test:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+      target: test-stage
+    container_name: hydro_habitat_integration_test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Provide the database URL for integration tests
+      DATABASE_URL: "postgres://${POSTGRES_USER:-hydro}:${POSTGRES_PASSWORD:-hydrosecret}@postgres:5432/${POSTGRES_DB:-hydro_habitat}?sslmode=disable"
+      # Flag to indicate we're running in CI/Docker environment
+      CI: ${CI:-false}
+    command: >
+      sh -c 'set -e;
+      if [ -n "$$GO_TEST_OUTPUT" ]; then
+        go test -v -tags=integration ./... | tee $$GO_TEST_OUTPUT;
+      else
+        go test -v -tags=integration ./...;
+      fi'
+
+  # Service for running frontend tests
+  frontend-test:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.test
+    container_name: hydro_habitat_frontend_test
+    # Frontend tests don't need database
+    command: npm run test:run
+
+  # Service for running backend linting
+  backend-lint:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.lint
+      target: linter
+    container_name: hydro_habitat_backend_lint
+    # Backend linting doesn't need database
+    command: golangci-lint run ./...
+
+  # Service for running frontend linting
+  frontend-lint:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.lint
+    container_name: hydro_habitat_frontend_lint
+    # Frontend linting doesn't need database
+    command: npm run lint
+
+  # Service for running backend security scanning
+  backend-security:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.lint
+      target: security
+    container_name: hydro_habitat_backend_security
+    # Security scanning doesn't need database
+    command: gosec ./...
+
+  # React Frontend Service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: hydro_habitat_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
