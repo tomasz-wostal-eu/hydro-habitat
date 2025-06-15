@@ -1,0 +1,10 @@
+{
+  "extends": ".releaserc.base.json",
+  "branches": [
+    {
+      "name": "develop",
+      "prerelease": "alpha",
+      "channel": "alpha"
+    }
+  ]
+}

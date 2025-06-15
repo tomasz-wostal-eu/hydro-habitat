@@ -1,0 +1,4 @@
+{
+  "extends": ".releaserc.base.json",
+  "branches": ["main"]
+}

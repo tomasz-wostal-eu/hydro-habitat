@@ -1,0 +1,231 @@
+name: CI, Release and Publish
+
+on:
+  push:
+    branches:
+      - "main"     # Run on main branch for releases
+      - "dev"      # Run on dev branch for prereleases
+      - "develop"  # Run on develop branch for prereleases
+
+jobs:
+  build-test-and-release:
+    name: Build, Test and Release
+    # Prevent infinite loops by skipping commits made by the bot
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # Required to create releases, tags, and commit changes
+      packages: write # Required to publish images to GHCR
+      issues: write # Required to comment on issues
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Fetch the full history to generate the changelog
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Run unit tests
+      run: docker compose run --rm backend-unit-test
+
+    - name: Run integration tests
+      run: docker compose run --rm backend-integration-test
+
+    - name: Run frontend tests
+      run: docker compose run --rm frontend-test
+
+    - name: Calculate next semantic version
+      id: semver
+      uses: paulhatch/semantic-version@v5.4.0
+      with:
+        tag_prefix: "v"
+        # Major version bump: BREAKING CHANGE: or MAJOR: in commit message
+        major_pattern: "(BREAKING CHANGE:|MAJOR:)"
+        major_regexp_flags: "gm"
+        # Minor version bump: feat:, FEAT:, feature:, FEATURE: in commit message
+        minor_pattern: "(feat:|FEAT:|feature:|FEATURE:)"
+        minor_regexp_flags: "gm"
+        # Patch version bump: Any other commit (fix:, docs:, etc.)
+        version_format: "${major}.${minor}.${patch}"
+        bump_each_commit: true
+        search_commit_body: true
+        user_format_type: "csv"
+        enable_prerelease_mode: ${{ github.ref != 'refs/heads/main' }}
+        branch: ${{ github.ref }}
+        
+    - name: Set version outputs
+      id: version
+      run: |
+        # Get the version from semver action  
+        if [[ "${{ steps.semver.outputs.version_tag }}" != "" ]]; then
+          VERSION_TAG="${{ steps.semver.outputs.version_tag }}"
+          VERSION="${{ steps.semver.outputs.version }}"
+        else
+          VERSION="${{ steps.semver.outputs.version }}"
+          VERSION_TAG="v${VERSION}"
+        fi
+        
+        # If we're on dev branch and not already a prerelease, add prerelease suffix
+        if [[ "${{ github.ref }}" == "refs/heads/dev" || "${{ github.ref }}" == "refs/heads/develop" ]]; then
+          if [[ ! "$VERSION" =~ -(alpha|beta|rc|dev) ]]; then
+            VERSION="${VERSION}-dev.$(date +%Y%m%d%H%M%S)"
+            VERSION_TAG="v${VERSION}"
+          fi
+        fi
+        
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "version_tag=${VERSION_TAG}" >> $GITHUB_OUTPUT
+
+    - name: Debug version outputs
+      run: |
+        echo "Semver version: ${{ steps.semver.outputs.version }}"
+        echo "Version tag: ${{ steps.version.outputs.version_tag }}"
+        echo "Clean version: ${{ steps.version.outputs.version }}"
+        echo "Major: ${{ steps.semver.outputs.major }}"
+        echo "Minor: ${{ steps.semver.outputs.minor }}"
+        echo "Patch: ${{ steps.semver.outputs.patch }}"
+        echo "Previous version: ${{ steps.semver.outputs.previous_version }}"
+        echo "Changed: ${{ steps.semver.outputs.changed }}"
+
+    - name: Generate changelog
+      id: changelog
+      uses: TriPSs/conventional-changelog-action@v6
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        tag-prefix: "v"
+        output-file: "false" # Output changelog as an action output
+        git-message: "chore(release): {version} [skip ci]"
+        git-user-name: "github-actions[bot]"
+        git-user-email: "github-actions[bot]@users.noreply.github.com"
+        git-pull-method: "--ff-only"
+        git-push: false  # We'll handle pushing ourselves to avoid conflicts
+        git-branch: ${{ github.ref }}
+        preset: "angular"
+        release-count: 5
+        version-file: "./package.json"
+        version-path: "version"
+        skip-git-pull: false
+        skip-on-empty: true
+        skip-version-file: false
+        skip-commit: false
+        skip-tag: true  # We'll create tags ourselves to handle duplicates
+        skip-ci: true
+        create-summary: false
+        pre-release: ${{ github.ref != 'refs/heads/main' }}
+        skip-bump: false
+
+    - name: Push changelog changes
+      run: |
+        # Configure git and push the changes made by conventional-changelog-action
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        
+        # Check if there are any changes to commit
+        if [[ -n $(git status --porcelain) ]]; then
+          echo "Pushing changelog changes..."
+          git push
+        else
+          echo "No changes to push"
+        fi
+
+    - name: Update final version and create tag
+      id: final_version
+      run: |
+        # Use the version from conventional-changelog-action if it ran successfully
+        if [[ "${{ steps.changelog.outputs.version }}" != "" ]]; then
+          VERSION="${{ steps.changelog.outputs.version }}"
+          VERSION_TAG="${{ steps.changelog.outputs.tag }}"
+          echo "Using version from changelog action: ${VERSION}"
+        else
+          # Fall back to our calculated version  
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_TAG="${{ steps.version.outputs.version_tag }}"
+          echo "Using version from semver calculation: ${VERSION}"
+          
+          # Update package.json manually if changelog action didn't run
+          if [[ -f "./package.json" ]]; then
+            npm version "$VERSION" --no-git-tag-version
+            git add package.json
+            git commit -m "chore(release): bump version to ${VERSION_TAG} [skip ci]"
+            git push
+          fi
+        fi
+        
+        # For dev branches, we don't modify the version since conventional-changelog handles prereleases
+        echo "Final version: ${VERSION}"
+        echo "Final version tag: ${VERSION_TAG}"
+        
+        # Create tag safely (only if it doesn't exist)
+        if git tag -l "${VERSION_TAG}" | grep -q "${VERSION_TAG}"; then
+          echo "Tag ${VERSION_TAG} already exists, skipping tag creation"
+        else
+          echo "Creating new tag: ${VERSION_TAG}"
+          git tag -a "${VERSION_TAG}" -m "${VERSION_TAG}"
+          git push origin "${VERSION_TAG}"
+        fi
+        
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "version_tag=${VERSION_TAG}" >> $GITHUB_OUTPUT
+
+    - name: Build and push backend image
+      uses: docker/build-push-action@v6
+      with:
+        context: ./backend
+        push: true
+        tags: |
+          ghcr.io/${{ github.repository }}/backend:${{ steps.final_version.outputs.version_tag }}
+          ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/backend:latest', github.repository) || format('ghcr.io/{0}/backend:dev', github.repository) }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push frontend image
+      uses: docker/build-push-action@v6
+      with:
+        context: ./frontend
+        push: true
+        tags: |
+          ghcr.io/${{ github.repository }}/frontend:${{ steps.final_version.outputs.version_tag }}
+          ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/frontend:latest', github.repository) || format('ghcr.io/{0}/frontend:dev', github.repository) }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Create GitHub Release
+      id: create_release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.final_version.outputs.version_tag }}
+        name: Release ${{ steps.final_version.outputs.version_tag }}
+        body: ${{ steps.changelog.outputs.changelog }}
+        draft: false
+        prerelease: ${{ github.ref != 'refs/heads/main' }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Comment on related issues
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+        RELEASE_URL: ${{ steps.create_release.outputs.html_url }}
+        RELEASE_VERSION: ${{ steps.final_version.outputs.version_tag }}
+      run: |
+        # Find unique issue numbers (e.g., #123) in the changelog
+        issues=$(echo "$CHANGELOG" | grep -oE '#[0-9]+' | sed 's/#//' | sort -u | tr '\n' ' ')
+        if [ -z "$issues" ]; then
+          echo "No related issues found in the changelog."
+          exit 0
+        fi
+        echo "Found issues: $issues"
+        for issue in $issues; do
+          echo "Commenting on issue #$issue"
+          gh issue comment "$issue" --body "✅ This has been addressed in release [${RELEASE_VERSION}](${RELEASE_URL})"
+        done
