@@ -1,0 +1,66 @@
+# Makefile for Hydro Habitat
+
+.PHONY: help up down logs test-unit test-integration test-integration-ci lint lint-backend lint-frontend security security-backend build clean
+
+help:
+	@echo "Available commands:"
+	@echo "  make up               - Starts all services in the background (builds if necessary)."
+	@echo "  make down             - Stops and removes all services."
+	@echo "  make logs             - Displays logs for all services."
+	@echo "  make test-unit        - Runs backend unit tests."
+	@echo "  make test-integration - Runs backend integration tests against a live database."
+	@echo "  make test-integration-ci - Runs integration tests in CI environment."
+	@echo "  make lint             - Runs linting for both backend and frontend."
+	@echo "  make lint-backend     - Runs Go linting checks."
+	@echo "  make lint-frontend    - Runs ESLint and Prettier checks for frontend."
+	@echo "  make security         - Runs security scanning for backend."
+	@echo "  make security-backend - Runs Go security scanning with gosec."
+	@echo "  make build            - Builds production Docker images."
+	@echo "  make clean            - Cleans up Docker resources."
+
+up:
+	docker compose up --build -d
+
+down:
+	docker compose down --volumes --remove-orphans
+
+logs:
+	docker compose logs -f
+
+test-unit:
+	@echo "Running backend unit tests..."
+	docker compose run --rm backend-unit-test
+
+test-integration:
+	@echo "Running backend integration tests..."
+	@echo "Note: This requires a running PostgreSQL database"
+	docker compose run -e CI=true --rm backend-integration-test
+
+test-integration-ci:
+	@echo "Running integration tests in CI environment..."
+	cd backend && go test -v -tags=integration ./...
+
+lint: lint-backend lint-frontend
+
+lint-backend:
+	@echo "Running backend Go linting..."
+	docker compose run --rm backend-lint
+
+lint-frontend:
+	@echo "Running frontend ESLint checks..."
+	docker compose run --rm frontend-lint
+
+security: security-backend
+
+security-backend:
+	@echo "Running backend security scanning with gosec..."
+	docker compose run --rm backend-security
+
+build:
+	@echo "Building production images..."
+	docker compose build --no-cache
+
+clean:
+	@echo "Cleaning up Docker resources..."
+	docker compose down --volumes --remove-orphans
+	docker system prune -f

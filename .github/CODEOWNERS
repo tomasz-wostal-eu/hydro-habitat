@@ -1,0 +1,23 @@
+# Global code owners
+* @twostal
+
+# Backend code
+/backend/ @twostal
+/go.mod @twostal
+/go.sum @twostal
+
+# Frontend code
+/frontend/ @twostal
+
+# Infrastructure and DevOps
+/.github/ @twostal
+/docker-compose.yaml @twostal
+/Dockerfile* @twostal
+/k8s/ @twostal
+/helm/ @twostal
+/Makefile @twostal
+
+# Documentation
+/README.md @twostal
+/CHANGELOG.md @twostal
+/SECURITY.md @twostal

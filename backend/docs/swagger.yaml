@@ -1,0 +1,230 @@
+basePath: /api/v1
+definitions:
+  api.HealthResponse:
+    properties:
+      status:
+        example: ok
+        type: string
+    type: object
+  domain.CreateTankDTO:
+    properties:
+      inventory_number:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      rack_location:
+        type: string
+      room:
+        type: string
+      volume_liters:
+        type: integer
+      water:
+        allOf:
+        - $ref: '#/definitions/domain.WaterType'
+        enum:
+        - tap
+        - ro
+        - rodi
+    required:
+    - name
+    - volume_liters
+    - water
+    type: object
+  domain.Tank:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      inventory_number:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      rack_location:
+        type: string
+      room:
+        type: string
+      updated_at:
+        type: string
+      volume_liters:
+        type: integer
+      water:
+        $ref: '#/definitions/domain.WaterType'
+    type: object
+  domain.UpdateTankDTO:
+    properties:
+      inventory_number:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      rack_location:
+        type: string
+      room:
+        type: string
+      volume_liters:
+        type: integer
+      water:
+        allOf:
+        - $ref: '#/definitions/domain.WaterType'
+        enum:
+        - tap
+        - ro
+        - rodi
+    required:
+    - name
+    - volume_liters
+    - water
+    type: object
+  domain.WaterType:
+    enum:
+    - tap
+    - ro
+    - rodi
+    type: string
+    x-enum-varnames:
+    - WaterTypeTap
+    - WaterTypeRO
+    - WaterTypeRODI
+host: localhost:8080
+info:
+  contact: {}
+  description: This is the API for the Hydro Habitat application.
+  title: Hydro Habitat API
+  version: "1.0"
+paths:
+  /health:
+    get:
+      description: Health check endpoint to verify the API is running
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Service is healthy
+          schema:
+            $ref: '#/definitions/api.HealthResponse'
+      summary: Health check
+      tags:
+      - health
+  /tanks:
+    get:
+      description: Retrieves a list of all tanks.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/domain.Tank'
+            type: array
+      summary: Get all tanks
+      tags:
+      - tanks
+    post:
+      consumes:
+      - application/json
+      description: Adds a new tank to the system inventory.
+      parameters:
+      - description: Tank to create
+        in: body
+        name: tank
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateTankDTO'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/domain.Tank'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Create a new tank
+      tags:
+      - tanks
+  /tanks/{id}:
+    delete:
+      description: Deletes a tank by its UUID.
+      parameters:
+      - description: Tank ID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+      summary: Delete a tank
+      tags:
+      - tanks
+    get:
+      description: Retrieves a single tank by its UUID.
+      parameters:
+      - description: Tank ID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Tank'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get a tank by ID
+      tags:
+      - tanks
+    put:
+      consumes:
+      - application/json
+      description: Updates an existing tank.
+      parameters:
+      - description: Tank ID
+        format: uuid
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Tank data to update
+        in: body
+        name: tank
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateTankDTO'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Tank'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Update a tank
+      tags:
+      - tanks
+swagger: "2.0"

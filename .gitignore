@@ -1,0 +1,30 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Output of the go coverage tool
+*.out
+
+# IDE settings
+.idea/
+.vscode/
+
+# Node.js
+/frontend/node_modules/
+/frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Backend
+/backend/hydro-habitat-server
+
+# Env file
+.env
+
+**/.DS_Store
+
+setup.sh

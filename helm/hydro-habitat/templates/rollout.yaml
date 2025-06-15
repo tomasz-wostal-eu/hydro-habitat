@@ -1,0 +1,133 @@
+{{- if .Values.rollout.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ include "hydro-habitat.fullname" . }}
+  labels:
+    {{- include "hydro-habitat.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- toYaml .Values.rollout.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "hydro-habitat.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "hydro-habitat.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "hydro-habitat.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.backendPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.environment }}
+            {{- if .Values.postgresql.enabled }}
+            - name: DATABASE_URL
+              value: "postgres://{{ .Values.postgresql.auth.username }}:{{ .Values.postgresql.auth.password }}@{{ include "hydro-habitat.fullname" . }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+            {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hydro-habitat.fullname" . }}-canary
+  labels:
+    {{- include "hydro-habitat.labels" . | nindent 4 }}
+    service-type: canary
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hydro-habitat.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hydro-habitat.fullname" . }}-stable
+  labels:
+    {{- include "hydro-habitat.labels" . | nindent 4 }}
+    service-type: stable
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "hydro-habitat.selectorLabels" . | nindent 4 }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+spec:
+  args:
+  - name: service-name
+  metrics:
+  - name: success-rate
+    interval: 10s
+    successCondition: result[0] >= 0.95
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus-server
+        query: |
+          sum(irate(
+            http_requests_total{job="{{`{{.args.service-name}}`}}",status!~"5.*"}[5m]
+          )) / 
+          sum(irate(
+            http_requests_total{job="{{`{{.args.service-name}}`}}"}[5m]
+          ))
+{{- end }}

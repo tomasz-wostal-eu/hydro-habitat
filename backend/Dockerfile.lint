@@ -1,0 +1,43 @@
+# Use a more recent golangci-lint image with Go 1.22+
+FROM golangci/golangci-lint:v2.1.6-alpine as linter
+
+# Install git for dependency resolution
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+# Copy Go module files first for better caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Default command for linting
+CMD ["golangci-lint", "run", "./..."]
+
+# Multi-stage for security scanning - use newer image with compatible Go version
+FROM golang:1.24-alpine as security-base
+
+# Install git and other dependencies
+RUN apk add --no-cache git
+
+# Install gosec
+RUN go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+
+WORKDIR /app
+
+# Copy Go module files first for better caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+FROM security-base as security
+
+WORKDIR /app
+COPY . .
+
+# Default command for security scanning
+CMD ["gosec", "./..."]

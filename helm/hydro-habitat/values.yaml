@@ -1,0 +1,85 @@
+# Default values for hydro-habitat.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/tomasz-wostal-eu/hydro-habitat
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets:
+  - name: regcred
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  backendPort: 8080
+  frontendPort: 3000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: hydro-habitat.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources: {}
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Environment-specific configuration
+environment: local
+
+# Argo Rollouts configuration
+rollout:
+  enabled: false
+  strategy:
+    canary:
+      steps:
+      - setWeight: 20
+      - pause: {}
+      - setWeight: 40
+      - pause: {duration: 10}
+      - setWeight: 60
+      - pause: {duration: 10}
+      - setWeight: 80
+      - pause: {duration: 10}
+      canaryService: hydro-habitat-canary
+      stableService: hydro-habitat-stable
+    analysis:
+      templates:
+      - templateName: success-rate
+      args:
+      - name: service-name
+        value: hydro-habitat-canary
+      startingStep: 2
+      successCondition: result[0] >= 0.95
+
+# Database configuration
+postgresql:
+  enabled: true
+  auth:
+    database: hydro_habitat
+    username: hydro
+    password: hydrosecret

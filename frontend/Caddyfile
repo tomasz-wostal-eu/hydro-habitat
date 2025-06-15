@@ -1,0 +1,19 @@
+:80 {
+    # Set the root directory to the folder where Vite builds files
+    root * /usr/share/caddy
+    
+    # Enable gzip/brotli compression
+    encode zstd gzip
+
+    # Redirect API requests to the backend server
+    handle /api/* {
+        reverse_proxy http://backend:8080
+    }
+
+    # Serve static files. `try_files` checks if the file exists,
+    # otherwise serves index.html (for React Router).
+    handle {
+        file_server
+        try_files {path} /index.html
+    }
+}
