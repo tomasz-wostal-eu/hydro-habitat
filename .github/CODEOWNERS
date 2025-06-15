@@ -1,23 +1,23 @@
 # Global code owners
-* @twostal
+* tomasz-wostal-eu
 
 # Backend code
-/backend/ @twostal
-/go.mod @twostal
-/go.sum @twostal
+/backend/ tomasz-wostal-eu
+/go.mod tomasz-wostal-eu
+/go.sum tomasz-wostal-eu
 
 # Frontend code
-/frontend/ @twostal
+/frontend/ tomasz-wostal-eu
 
 # Infrastructure and DevOps
-/.github/ @twostal
-/docker-compose.yaml @twostal
-/Dockerfile* @twostal
-/k8s/ @twostal
-/helm/ @twostal
-/Makefile @twostal
+/.github/ tomasz-wostal-eu
+/docker-compose.yaml tomasz-wostal-eu
+/Dockerfile* tomasz-wostal-eu
+/k8s/ tomasz-wostal-eu
+/helm/ tomasz-wostal-eu
+/Makefile tomasz-wostal-eu
 
 # Documentation
-/README.md @twostal
-/CHANGELOG.md @twostal
-/SECURITY.md @twostal
+/README.md tomasz-wostal-eu
+/CHANGELOG.md tomasz-wostal-eu
+/SECURITY.md tomasz-wostal-eu
